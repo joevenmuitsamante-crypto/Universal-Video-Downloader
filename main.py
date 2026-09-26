@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QStackedWidget, QFormLayout, QSizePolicy, QScrollArea
 )
 
-APP_VERSION = os.environ.get("UMD_BUILD_VERSION", "4.3.2")
+APP_VERSION = os.environ.get("UMD_BUILD_VERSION", "4.4.0")
 BUILD_YEAR = "2026"
 # Set this to your GitHub repository, for example "leo123/UniversalMediaDownloader".
 # Releases published there are checked from Settings so users can download new installers.

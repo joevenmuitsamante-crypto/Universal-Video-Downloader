@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
-if not defined UMD_BUILD_VERSION set "UMD_BUILD_VERSION=4.3.2"
+if not defined UMD_BUILD_VERSION set "UMD_BUILD_VERSION=4.4.0"
 title Universal Media Downloader V%UMD_BUILD_VERSION% Builder
 
 echo ============================================================
