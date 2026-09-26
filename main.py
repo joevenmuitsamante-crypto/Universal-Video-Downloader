@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QPixmap, QIcon
-from embedded_assets import GCASH_QR_B64, PAYPAL_QR_B64, LOGO_PNG_B64
+from embedded_assets import GCASH_QR_B64, PAYPAL_QR_B64, WISE_QR_B64, LOGO_PNG_B64
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -155,6 +155,82 @@ class UpdateWorker(QThread):
             return h.hexdigest()
         except Exception:return None
 
+class ComponentUpdateWorker(QThread):
+    progress = Signal(int)
+    status = Signal(str)
+    completed = Signal(bool, str, str)
+
+    def __init__(self, item):
+        super().__init__()
+        self.item = item
+
+    def replace_file(self, source, target):
+        backup = target.with_suffix(target.suffix + ".old")
+        if target.exists():
+            shutil.copy2(source, backup)
+        try:
+            shutil.copy2(source, target)
+            if backup.exists():
+                backup.unlink(missing_ok=True)
+        except Exception:
+            if backup.exists():
+                shutil.copy2(backup, target)
+            raise
+
+    def run(self):
+        kind = self.item.get("kind", "")
+        td = None
+        try:
+            if not self.item.get("asset"):
+                raise RuntimeError("No Windows update package was found.")
+
+            label = "yt-dlp" if kind == "yt-dlp" else "FFmpeg"
+            self.status.emit(f"Downloading {label} update…")
+            td = Path(tempfile.mkdtemp(prefix="umd_update_"))
+            pkg = td / self.item["asset_name"]
+
+            req = urllib.request.Request(
+                self.item["asset"],
+                headers={
+                    "User-Agent": f"UniversalMediaDownloader/{APP_VERSION}",
+                    "Accept": "*/*"
+                }
+            )
+
+            with urllib.request.urlopen(req, timeout=180) as r:
+                total = int(r.headers.get("Content-Length") or 0)
+                downloaded = 0
+                with open(pkg, "wb") as f:
+                    while True:
+                        chunk = r.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total:
+                            self.progress.emit(max(0, min(100, int(downloaded * 100 / total))))
+
+            self.progress.emit(100)
+            self.status.emit(f"Installing {label} update…")
+
+            if kind == "yt-dlp":
+                self.replace_file(pkg, YTDLP)
+            else:
+                with zipfile.ZipFile(pkg) as z:
+                    z.extractall(td)
+                candidate = next(td.rglob("ffmpeg.exe"), None)
+                if not candidate:
+                    raise RuntimeError("ffmpeg.exe was not found in the update package.")
+                self.replace_file(candidate, FFMPEG)
+
+            self.completed.emit(True, kind, str(self.item.get("release") or self.item.get("latest")))
+        except Exception as e:
+            self.completed.emit(False, kind, str(e))
+        finally:
+            if td:
+                shutil.rmtree(td, ignore_errors=True)
+
+
 class InfoWorker(QThread):
     success = Signal(dict)
     failure = Signal(str)
@@ -245,6 +321,7 @@ class App(QMainWindow):
         self.download_worker = None
         self.metadata = {}
         self.update_worker = None
+        self.component_update_worker = None
         self.update_results = {}
         self.download_queue = []
         self.settings_path = LOCAL_APPDATA / "settings.json"
@@ -433,7 +510,11 @@ class App(QMainWindow):
         layout.addWidget(msg)
 
         qr_row = QHBoxLayout()
-        for b64, name in ((GCASH_QR_B64, "GCash"), (PAYPAL_QR_B64, "PayPal")):
+        for b64, name in (
+            (GCASH_QR_B64, "GCash"),
+            (PAYPAL_QR_B64, "PayPal"),
+            (WISE_QR_B64, "Wise"),
+        ):
             box = QVBoxLayout()
             qr = QLabel()
             qr.setObjectName("SupportQR")
@@ -638,9 +719,22 @@ class App(QMainWindow):
         ut = QLabel("Updates"); ut.setObjectName("SectionTitle"); uv.addWidget(ut)
         self.update_info = QLabel(f"Universal Media Downloader\nVersion {APP_VERSION} • Build {BUILD_YEAR}")
         self.update_info.setObjectName("Muted"); self.update_info.setWordWrap(True); uv.addWidget(self.update_info)
-        update_btn = QPushButton("Check GitHub for New Version")
-        update_btn.clicked.connect(self.check_updates)
-        uv.addWidget(update_btn)
+        self.update_btn = QPushButton("Check GitHub for New Version")
+        self.update_btn.clicked.connect(self.check_updates)
+        uv.addWidget(self.update_btn)
+
+        self.update_progress = QProgressBar()
+        self.update_progress.setRange(0, 100)
+        self.update_progress.setValue(0)
+        self.update_progress.setTextVisible(False)
+        self.update_progress.setVisible(False)
+        uv.addWidget(self.update_progress)
+
+        self.update_status = QLabel("")
+        self.update_status.setObjectName("Muted")
+        self.update_status.setWordWrap(True)
+        uv.addWidget(self.update_status)
+
         v.addWidget(update_card)
         v.addStretch()
         return w
@@ -697,49 +791,78 @@ class App(QMainWindow):
         try: UPDATE_CACHE.write_text(json.dumps(data,indent=2),encoding="utf-8")
         except Exception: pass
 
+    def set_update_checking(self, checking):
+        if hasattr(self, "update_btn"):
+            self.update_btn.setEnabled(not checking)
+            self.update_btn.setText(
+                "Checking for new version…" if checking else "Check GitHub for New Version"
+            )
+        if hasattr(self, "update_status"):
+            self.update_status.setText(
+                "Checking GitHub for the latest app and component versions…" if checking else ""
+            )
+
     def check_updates(self):
+        if self.update_worker is not None and self.update_worker.isRunning():
+            return
         self.status.setText("Checking for updates…")
-        self.update_worker=UpdateWorker()
+        self.set_update_checking(True)
+        self.update_worker = UpdateWorker()
         self.update_worker.result.connect(self.show_updates)
         self.update_worker.error.connect(self.update_check_failed)
+        self.update_worker.finished.connect(lambda: self.set_update_checking(False))
         self.update_worker.start()
 
     def update_check_failed(self, error):
         self.status.setText("Update check failed")
-        QMessageBox.warning(self, "Update check failed",
-                            "Could not contact GitHub to check for a new version.\n\n" + str(error))
+        self.set_update_checking(False)
+        msg = str(error)
+        if "403" in msg or "rate" in msg.lower() or "limit" in msg.lower():
+            msg = (
+                "GitHub temporarily rate-limited the update check.\n\n"
+                "Please wait a while before checking again. "
+                "This does not mean your app or GitHub release is broken."
+            )
+        QMessageBox.warning(self, "Update check failed", msg)
 
     def show_updates(self, results):
         self.update_results = results
         app = results.get("app", {})
+
         if app.get("configured") and app.get("updated"):
             box = QMessageBox(self)
             box.setWindowTitle("New version available")
             box.setText(f"🚀 Universal Media Downloader v{app.get('latest')} is available")
-            box.setInformativeText("A new installer is available on GitHub. Download it to update the application.")
+            box.setInformativeText(
+                "A new installer is available on GitHub. Download it to update the application."
+            )
             btn = box.addButton("Download Update", QMessageBox.AcceptRole)
             box.addButton("Later", QMessageBox.RejectRole)
             box.exec()
             if box.clickedButton() is btn:
                 webbrowser.open(app.get("asset") or app.get("url") or GITHUB_RELEASES_PAGE)
-        elif app.get("configured"):
-            self.status.setText("✓ App is up to date")
 
-        # Component updates remain separate because they can be replaced without reinstalling the app.
+        # Component updates remain separate because they can be replaced without
+        # reinstalling the whole application.
         cache = self.load_update_cache()
         for kind in ("yt-dlp", "ffmpeg"):
             item = results.get(kind, {})
             release = str(item.get("release") or item.get("latest"))
             if not item.get("updated") or cache.get(kind) == release:
                 continue
+
             label = "yt-dlp" if kind == "yt-dlp" else "FFmpeg"
             box = QMessageBox(self)
             box.setWindowTitle(f"{label} update available")
             box.setText(f"🔄 {label} update available")
-            box.setInformativeText(f"Current: {item.get('current')}\\nLatest: {item.get('latest')}\\n\\nWould you like to update now?")
+            box.setInformativeText(
+                f"Current: {item.get('current')}\nLatest: {item.get('latest')}\n\n"
+                "Would you like to update now?"
+            )
             now = box.addButton("Update Now", QMessageBox.AcceptRole)
-            later = box.addButton("Later", QMessageBox.RejectRole)
+            box.addButton("Later", QMessageBox.RejectRole)
             box.exec()
+
             if box.clickedButton() is now:
                 self.install_component_update(item)
             else:
@@ -747,40 +870,62 @@ class App(QMainWindow):
                 self.save_update_cache(cache)
 
         if not app.get("updated"):
-            self.status.setText("✓ No new app version found" if app.get("configured") else
-                                "GitHub app updates are not configured yet.")
+            self.status.setText(
+                "✓ No new app version found" if app.get("configured")
+                else "GitHub app updates are not configured yet."
+            )
 
-    def install_component_update(self,item):
-        kind=item["kind"]
-        try:
-            if not item.get("asset"): raise RuntimeError("No Windows update package was found.")
-            self.status.setText(f"Updating {kind}…")
-            td=Path(tempfile.mkdtemp(prefix="umd_update_"))
-            pkg=td/item["asset_name"]
-            req=urllib.request.Request(item["asset"],headers={"User-Agent":f"UniversalMediaDownloader/{APP_VERSION}"})
-            with urllib.request.urlopen(req,timeout=180) as r, open(pkg,"wb") as f: shutil.copyfileobj(r,f)
-            if kind=="yt-dlp":
-                self.replace_file(pkg,YTDLP)
-            else:
-                with zipfile.ZipFile(pkg) as z: z.extractall(td)
-                candidate=next(td.rglob("ffmpeg.exe"),None)
-                if not candidate: raise RuntimeError("ffmpeg.exe was not found in the update package.")
-                self.replace_file(candidate,FFMPEG)
-            cache=self.load_update_cache(); cache[kind]=str(item.get("release") or item.get("latest")); self.save_update_cache(cache)
-            self.status.setText(f"✓ {kind} updated")
-            QMessageBox.information(self,"Update complete",f"{kind} was updated successfully.")
-        except Exception as e:
-            QMessageBox.critical(self,"Update failed",f"Could not update {kind}.\\n\\n{e}")
+        self.set_update_checking(False)
+
+    def install_component_update(self, item):
+        if self.component_update_worker is not None and self.component_update_worker.isRunning():
+            return
+
+        kind = item.get("kind", "")
+        label = "yt-dlp" if kind == "yt-dlp" else "FFmpeg"
+
+        self.update_progress.setValue(0)
+        self.update_progress.setVisible(True)
+        self.update_status.setText(f"Downloading {label} update…")
+        self.status.setText(f"Updating {label}…")
+
+        self.component_update_worker = ComponentUpdateWorker(item)
+        self.component_update_worker.progress.connect(self.update_progress.setValue)
+        self.component_update_worker.status.connect(self.update_status.setText)
+        self.component_update_worker.completed.connect(self.component_update_finished)
+        self.component_update_worker.start()
+
+    def component_update_finished(self, ok, kind, result):
+        label = "yt-dlp" if kind == "yt-dlp" else "FFmpeg"
+        self.update_progress.setVisible(False)
+
+        if ok:
+            cache = self.load_update_cache()
+            cache[kind] = result
+            self.save_update_cache(cache)
+            self.status.setText(f"✓ {label} updated")
+            self.update_status.setText(f"✓ {label} updated successfully.")
+            self.notify_user("Update Complete", f"{label} was updated successfully.")
+        else:
             self.status.setText("Update failed")
+            self.update_status.setText(f"✕ {label} update failed")
+            QMessageBox.critical(
+                self,
+                "Update failed",
+                f"Could not update {label}.\n\n{result}"
+            )
 
-    def replace_file(self,source,target):
-        backup=target.with_suffix(target.suffix+".old")
-        if target.exists(): shutil.copy2(target,backup)
+    def replace_file(self, source, target):
+        backup = target.with_suffix(target.suffix + ".old")
+        if target.exists():
+            shutil.copy2(target, backup)
         try:
-            shutil.copy2(source,target)
-            if backup.exists(): backup.unlink(missing_ok=True)
+            shutil.copy2(source, target)
+            if backup.exists():
+                backup.unlink(missing_ok=True)
         except Exception:
-            if backup.exists(): shutil.copy2(backup,target)
+            if backup.exists():
+                shutil.copy2(backup, target)
             raise
 
     def browse(self):
