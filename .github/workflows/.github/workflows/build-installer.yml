@@ -1,0 +1,43 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, for example 4.3.0"
+        required: true
+        default: "4.3.0"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      UMD_BUILD_VERSION: ${{ inputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Inno Setup
+        shell: powershell
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: cmd
+        run: BUILD_INSTALLER.bat
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UniversalMediaDownloader-${{ env.UMD_BUILD_VERSION }}
+          path: |
+            installer_output/UniversalMediaDownloader_Setup_v${{ env.UMD_BUILD_VERSION }}.exe
+            installer_output/UniversalMediaDownloader_Setup_v${{ env.UMD_BUILD_VERSION }}.exe.sha256.txt
+            installer_output/BUILD_INFO.txt
