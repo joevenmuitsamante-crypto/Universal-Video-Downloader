@@ -1,6 +1,6 @@
 #define MyAppName "Universal Media Downloader"
 #ifndef MyAppVersion
-#define MyAppVersion "4.3.0"
+#define MyAppVersion "4.3.2"
 #endif
 #define MyAppPublisher "Universal Media Downloader"
 #define MyAppExeName "UniversalMediaDownloader.exe"

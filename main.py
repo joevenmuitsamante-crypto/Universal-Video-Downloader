@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QStackedWidget, QFormLayout, QSizePolicy, QScrollArea
 )
 
-APP_VERSION = os.environ.get("UMD_BUILD_VERSION", "4.3.0")
+APP_VERSION = os.environ.get("UMD_BUILD_VERSION", "4.3.2")
 BUILD_YEAR = "2026"
 # Set this to your GitHub repository, for example "leo123/UniversalMediaDownloader".
 # Releases published there are checked from Settings so users can download new installers.
@@ -98,7 +98,7 @@ class UpdateWorker(QThread):
 
     def version_newer(self, latest, current):
         def nums(x):
-            return tuple(int(n) for n in re.findall(r"\\d+", str(x))[:4])
+            return tuple(int(n) for n in re.findall(r"\d+", str(x))[:4])
         return nums(latest) > nums(current)
 
     def ytdlp(self):
@@ -247,9 +247,11 @@ class App(QMainWindow):
         self.update_worker = None
         self.update_results = {}
         self.download_queue = []
+        self.settings_path = LOCAL_APPDATA / "settings.json"
 
         self.build_ui()
         self.load_history()
+        self.load_settings()
         self.apply_theme()
         # Do not contact update servers on first launch. Components are bundled by the installer;
         # users can manually check for updates from Settings.
@@ -643,6 +645,42 @@ class App(QMainWindow):
         v.addStretch()
         return w
 
+    def load_settings(self):
+        try:
+            data = json.loads(self.settings_path.read_text(encoding="utf-8")) if self.settings_path.exists() else {}
+            self.keep_open.setChecked(bool(data.get("keep_open", True)))
+            self.notifications.setChecked(bool(data.get("notifications", True)))
+            if hasattr(self, "auto_paste"): self.auto_paste.setChecked(bool(data.get("auto_paste", False)))
+            if hasattr(self, "auto_start"): self.auto_start.setChecked(bool(data.get("auto_start", False)))
+            if hasattr(self, "remember_folder"): self.remember_folder.setChecked(bool(data.get("remember_folder", True)))
+        except Exception:
+            pass
+
+    def save_settings(self):
+        try:
+            data = {
+                "keep_open": self.keep_open.isChecked(),
+                "notifications": self.notifications.isChecked(),
+                "auto_paste": self.auto_paste.isChecked() if hasattr(self, "auto_paste") else False,
+                "auto_start": self.auto_start.isChecked() if hasattr(self, "auto_start") else False,
+                "remember_folder": self.remember_folder.isChecked() if hasattr(self, "remember_folder") else True,
+            }
+            self.settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def apply_behavior_settings(self):
+        self.save_settings()
+        QApplication.beep()
+        QMessageBox.information(self, "Settings Applied",
+                                "Behavior settings have been applied successfully.")
+
+    def notify_user(self, title, message):
+        if not self.notifications.isChecked():
+            return
+        QApplication.beep()
+        QMessageBox.information(self, title, message)
+
     def set_theme_from_settings(self, value=None):
         value = value or self.theme_combo.currentText()
         if value == "System":
@@ -663,8 +701,13 @@ class App(QMainWindow):
         self.status.setText("Checking for updates…")
         self.update_worker=UpdateWorker()
         self.update_worker.result.connect(self.show_updates)
-        self.update_worker.error.connect(lambda e:self.status.setText("Ready"))
+        self.update_worker.error.connect(self.update_check_failed)
         self.update_worker.start()
+
+    def update_check_failed(self, error):
+        self.status.setText("Update check failed")
+        QMessageBox.warning(self, "Update check failed",
+                            "Could not contact GitHub to check for a new version.\n\n" + str(error))
 
     def show_updates(self, results):
         self.update_results = results
@@ -902,12 +945,19 @@ class App(QMainWindow):
             self.progress.setValue(100)
             self.status.setText("✓ " + msg)
             self.save_history()
+            if self.download_queue:
+                self.start_next_queue_item()
+                return
+            self.download.setEnabled(True)
+            self.notify_user("Download Complete", "Your media has been downloaded successfully.")
+            if not self.keep_open.isChecked():
+                self.close()
         else:
             self.status.setText("✕ " + msg)
-        if self.download_queue:
-            self.start_next_queue_item()
-        else:
             self.download.setEnabled(True)
+            self.notify_user("Download Failed", msg)
+            if not self.keep_open.isChecked():
+                self.close()
 
     def save_history(self):
         try:
@@ -1009,11 +1059,20 @@ class App(QMainWindow):
                            capture_output=True, text=True)
             if r.returncode:
                 QMessageBox.critical(self, "Shortcut error", r.stderr or "Could not create shortcut.")
+                return
+            QApplication.beep()
+            QMessageBox.information(self, "Shortcut Applied",
+                                    "The desktop shortcut has been created successfully.")
         else:
             try:
                 shortcut.unlink(missing_ok=True)
             except Exception as e:
                 QMessageBox.critical(self, "Shortcut error", str(e))
+                return
+            QApplication.beep()
+            QMessageBox.information(self, "Shortcut Setting Applied",
+                                    "The desktop shortcut has been removed successfully.")
+        self.save_settings()
 
     def toggle_theme(self):
         self.dark = not self.dark
