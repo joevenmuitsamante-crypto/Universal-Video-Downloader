@@ -1,0 +1,28 @@
+# UTF-8
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(4,2,8,0),
+    prodvers=(4,2,8,0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0,0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        '040904B0',
+        [StringStruct('CompanyName', 'Universal Media Downloader'),
+         StringStruct('FileDescription', 'Universal Media Downloader'),
+         StringStruct('FileVersion', '4.2.9.0'),
+         StringStruct('InternalName', 'UniversalMediaDownloader'),
+         StringStruct('OriginalFilename', 'UniversalMediaDownloader.exe'),
+         StringStruct('ProductName', 'Universal Media Downloader'),
+         StringStruct('ProductVersion', '4.2.9.0'),
+         StringStruct('LegalCopyright', 'Copyright 2026 Universal Media Downloader')])
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
